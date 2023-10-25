@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from lib.utils.tools import *
 from lib.utils.learning import *
 from lib.model.loss import *
-from lib.data.dataset_action import NTURGBD
+from lib.data.dataset_action import NTURGBD, NTURGBDPySKL
 from lib.model.model_action import ActionNet
 
 random.seed(0)
@@ -123,10 +123,18 @@ def train_with_config(args, opts):
           'persistent_workers': True
     }
     data_path = 'data/action/%s.pkl' % args.dataset
-    ntu60_xsub_train = NTURGBD(data_path=data_path, data_split=args.data_split+'_train', n_frames=args.clip_len, random_move=args.random_move, scale_range=args.scale_range_train)
-    ntu60_xsub_val = NTURGBD(data_path=data_path, data_split=args.data_split+'_val', n_frames=args.clip_len, random_move=False, scale_range=args.scale_range_test)
+    # ntu60_xsub_train = NTURGBDPySKL(data_path=data_path, resize_scale_1=(-1, 64), resize_scale_2=(56, 56), crop_area_range=(0.56, 1.0), input_format='NCTHW_Heatmap', keys=['imgs', 'label'], meta_keys=[])
+    # ntu60_xsub_val = NTURGBDPySKL(data_path=data_path, resize_scale_1=(-1, 64), resize_scale_2=(56, 56), crop_area_range=(0.56, 1.0), input_format='NCTHW_Heatmap', keys=['imgs', 'label'], meta_keys=[])
+    # print(ntu60_xsub_train[0])
+    # train_loader = DataLoader(ntu60_xsub_train, **trainloader_params)
+    # test_loader = DataLoader(ntu60_xsub_val, **testloader_params)
 
+    ntu60_xsub_train = NTURGBD(data_path=data_path, data_split=args.data_split+'_train', n_frames=args.clip_len, random_move=args.random_move, scale_range=args.scale_range_train)
+    print('1')
+    ntu60_xsub_val = NTURGBD(data_path=data_path, data_split=args.data_split+'_val', n_frames=args.clip_len, random_move=False, scale_range=args.scale_range_test)
+    print('2')
     train_loader = DataLoader(ntu60_xsub_train, **trainloader_params)
+    print('3')
     test_loader = DataLoader(ntu60_xsub_val, **testloader_params)
         
     chk_filename = os.path.join(opts.checkpoint, "latest_epoch.bin")
@@ -140,8 +148,8 @@ def train_with_config(args, opts):
     
     if not opts.evaluate:
         optimizer = optim.AdamW(
-            [     {"params": filter(lambda p: p.requires_grad, model.module.backbone.parameters()), "lr": args.lr_backbone},
-                  {"params": filter(lambda p: p.requires_grad, model.module.head.parameters()), "lr": args.lr_head},
+            [     {"params": filter(lambda p: p.requires_grad, model.backbone.parameters()), "lr": args.lr_backbone},
+                  {"params": filter(lambda p: p.requires_grad, model.head.parameters()), "lr": args.lr_head},
             ],      lr=args.lr_backbone, 
                     weight_decay=args.weight_decay
         )
