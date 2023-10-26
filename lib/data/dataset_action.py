@@ -166,26 +166,26 @@ class ActionDataset(Dataset):
         for sample in annotations:
             if check_split and (not sample['frame_dir'] in self.split):
                 continue
-            #heatmap = pipeline(sample)['imgs']
+            heatmap = pipeline(sample)['imgs']
             #print(heatmap)
-            resample_id = resample(ori_len=sample['total_frames'], target_len=n_frames, replay=False, randomness=self.is_train)
-            #print(resample_id)
-            motion_cam = make_cam(x=sample['keypoint'], img_shape=sample['img_shape'])
-            motion_cam = human_tracking(motion_cam)
-            motion_cam = coco2h36m(motion_cam)
-            motion_conf = sample['keypoint_score'][..., None]
-            # motion_conf = motion_conf.squeeze(axis=0)
-            # motion_conf = np.expand_dims(motion_conf, axis=-1)
-            # Debugging prints
-            # print("resample_id:", resample_id)
-            # print("motion_cam shape:", motion_cam.shape)
-            # print("motion_conf shape:", motion_conf.shape)
-            motion = np.concatenate((motion_cam[:,resample_id], motion_conf[:,resample_id]), axis=-1)
-            print("motion shape:", motion.shape)
-            # if motion.shape[0]==1:                                  # Single person, make a fake zero person
-            #     fake = np.zeros(motion.shape)
-            #     motion = np.concatenate((motion, fake), axis=0)
-            motions.append(motion)#.astype(np.float32)) 
+            # resample_id = resample(ori_len=sample['total_frames'], target_len=n_frames, replay=False, randomness=self.is_train)
+            # #print(resample_id)
+            # motion_cam = make_cam(x=sample['keypoint'], img_shape=sample['img_shape'])
+            # motion_cam = human_tracking(motion_cam)
+            # motion_cam = coco2h36m(motion_cam)
+            # motion_conf = sample['keypoint_score'][..., None]
+            # # motion_conf = motion_conf.squeeze(axis=0)
+            # # motion_conf = np.expand_dims(motion_conf, axis=-1)
+            # # Debugging prints
+            # # print("resample_id:", resample_id)
+            # # print("motion_cam shape:", motion_cam.shape)
+            # # print("motion_conf shape:", motion_conf.shape)
+            # motion = np.concatenate((motion_cam[:,resample_id], motion_conf[:,resample_id]), axis=-1)
+            # print("motion shape:", motion.shape)
+            # # if motion.shape[0]==1:                                  # Single person, make a fake zero person
+            # #     fake = np.zeros(motion.shape)
+            # #     motion = np.concatenate((motion, fake), axis=0)
+            motions.append(heatmap)#.astype(np.float32)) 
             labels.append(sample['label'])
             # print("motion_camddd shape:", len(motions[0][0][0]))
             # print("motion_confddd shape:", (labels[0].shape))
