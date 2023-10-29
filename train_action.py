@@ -45,6 +45,21 @@ def permute_single_batch(batch):
 
     return batch
 
+def permute_test_data(batch):
+    """
+    Permute and reshape the given batch.
+    
+    Assumes the batch is a dictionary containing a tensor where
+    the last two dimensions need to be combined.
+    """
+    batch['imgs'] = batch['imgs'].permute(0, 1, 3, 2, 4, 5)  # Permute the dimensions
+    
+    # Get the shape of the tensor and combine the last two dimensions
+    *leading_dims, last_dim1, last_dim2 = batch['imgs'].shape
+    batch['imgs'] = batch['imgs'].reshape(*leading_dims, last_dim1*last_dim2)
+
+    return batch
+
 dataset = read_pkl('data/action/ntu60_hrnet.pkl')
 dataset_type = 'PoseDataset'
 ann_file = 'data/action/ntu60_hrnet.pkl'
@@ -68,7 +83,7 @@ test_pipeline = [
     dict(type='UniformSampleFrames', clip_len=48, num_clips=10),
     dict(type='PoseDecode'),
     dict(type='PoseCompact', hw_ratio=1., allow_imgpad=True),
-    dict(type='Resize', scale=(64, 64), keep_ratio=False),
+    dict(type='Resize', scale=(56, 56), keep_ratio=False),
     dict(type='GeneratePoseTarget', with_kp=True, with_limb=False, double=True, left_kp=left_kp, right_kp=right_kp),
     dict(type='FormatShape', input_format='NCTHW_Heatmap'),
     dict(type='Collect', keys=['imgs', 'label'], meta_keys=[]),
@@ -77,7 +92,7 @@ test_pipeline = [
 
 data = dict(
     videos_per_gpu=32,
-    workers_per_gpu=4,
+    workers_per_gpu=1,
     test_dataloader=dict(videos_per_gpu=1),
     train=dict(
         type='RepeatDataset',
@@ -216,14 +231,16 @@ def train_with_config(args, opts):
         build_dataloader(ds, **train_dataloader_setting) for ds in train_dataset
     ]
 
-    test_data_loaders = build_dataloader(test_dataset, **test_dataloader_setting)
-    #data_loaders_shape_ajusted = permute_data_loaders(data_loaders)
+    test_data_loaders = [
+        build_dataloader(ds, **test_dataloader_setting) for ds in test_dataset
+    ]
+    print((test_data_loaders[0]))
 
-    for batch_idx, batch_data in enumerate(train_data_loaders[0]):
+    for batch_idx, batch_data in enumerate(test_data_loaders[0]):
         print(f"Batch {batch_idx + 1} Type: {type(batch_data)}")
 
         # Permute the batch
-        batch_data = permute_single_batch(batch_data)
+        batch_data = permute_test_data(batch_data)
 
         # If it's a dictionary, print the keys and the shape of associated values (assuming they're tensors)
         if isinstance(batch_data, dict):
@@ -237,8 +254,7 @@ def train_with_config(args, opts):
         if batch_idx > 0:
             break
 
-    train_data_loaders[0] = train_data_loaders[0][:100]        
-    print((len(train_data_loaders[0])))        
+   
     chk_filename = os.path.join(opts.checkpoint, "latest_epoch.bin")
     if os.path.exists(chk_filename):
         opts.resume = chk_filename
