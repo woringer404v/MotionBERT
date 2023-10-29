@@ -237,6 +237,8 @@ def train_with_config(args, opts):
         if batch_idx > 0:
             break
 
+    train_data_loaders[0] = train_data_loaders[0][:100]        
+    print((len(train_data_loaders[0])))        
     chk_filename = os.path.join(opts.checkpoint, "latest_epoch.bin")
     if os.path.exists(chk_filename):
         opts.resume = chk_filename
@@ -248,15 +250,15 @@ def train_with_config(args, opts):
     
     if not opts.evaluate:
         optimizer = optim.AdamW(
-            [     {"params": filter(lambda p: p.requires_grad, model.backbone.parameters()), "lr": args.lr_backbone},
-                  {"params": filter(lambda p: p.requires_grad, model.head.parameters()), "lr": args.lr_head},
+            [     {"params": filter(lambda p: p.requires_grad, model.module.backbone.parameters()), "lr": args.lr_backbone},
+                  {"params": filter(lambda p: p.requires_grad, model.module.head.parameters()), "lr": args.lr_head},
             ],      lr=args.lr_backbone, 
                     weight_decay=args.weight_decay
         )
 
         scheduler = StepLR(optimizer, step_size=1, gamma=args.lr_decay)
         st = 0
-        print('INFO: Training on {} batches'.format(len(train_data_loaders)))
+        print('INFO: Training on {} batches'.format(len(train_data_loaders[0])))
         if opts.resume:
             st = checkpoint['epoch']
             if 'optimizer' in checkpoint and checkpoint['optimizer'] is not None:
@@ -278,6 +280,8 @@ def train_with_config(args, opts):
             end = time.time()
             iters = len(train_data_loaders)
             for idx, batch_data in tqdm(enumerate(train_data_loaders[0])):    # (N, 2, T, 17, 3) to (N, 1, T, 17, 3136)
+                if idx >= 100:
+                    break
                 batch_data = permute_single_batch(batch_data)
                 batch_input = batch_data['imgs']
                 batch_gt = batch_data['label']
