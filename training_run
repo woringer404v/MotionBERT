@@ -1,0 +1,25 @@
+#!/bin/bash
+#SBATCH --nodes 1
+#SBATCH --cpus-per-task 40
+
+#SBATCH --partition=gpu
+#SBATCH --qos=gpu
+#SBATCH --gres=gpu:2
+
+#SBATCH -o /home/mbenahme/MotionBERT/mb_train_ntu60xsub.out # STDOUT
+
+#SBATCH --ntasks 1
+#SBATCH --account=vita
+#SBATCH --mem 128G
+#SBATCH --time 20:00:00
+
+
+echo "fidis $HOSTNAME"
+
+conda init bash
+. /home/mbenahme/.bashrc
+conda activate /home/mbenahme/anaconda3/envs/motionbert
+
+nvidia-smi
+
+python /home/mbenahme/MotionBERT/train_action.py --config /home/mbenahme/MotionBERT/configs/action/MB_train_NTU60_xsub.yaml

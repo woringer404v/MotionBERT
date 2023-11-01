@@ -96,7 +96,7 @@ data = dict(
     test_dataloader=dict(videos_per_gpu=1),
     train=dict(
         type='RepeatDataset',
-        times=10,
+        times=1,
         dataset=dict(type=dataset_type, ann_file=ann_file, split='xsub_train', pipeline=train_pipeline)),
     test=dict(type=dataset_type, ann_file=ann_file, split='xsub_val', pipeline=test_pipeline))
 
@@ -107,7 +107,7 @@ def parse_args():
     parser.add_argument('-p', '--pretrained', default='checkpoint', type=str, metavar='PATH', help='pretrained checkpoint directory')
     parser.add_argument('-r', '--resume', default='', type=str, metavar='FILENAME', help='checkpoint to resume (file name)')
     parser.add_argument('-e', '--evaluate', default='', type=str, metavar='FILENAME', help='checkpoint to evaluate (file name)')
-    parser.add_argument('-freq', '--print_freq', default=100)
+    parser.add_argument('-freq', '--print_freq', default=101)
     parser.add_argument('-ms', '--selection', default='latest_epoch.bin', type=str, metavar='FILENAME', help='checkpoint to finetune (file name)')
     opts = parser.parse_args()
     return opts
@@ -120,8 +120,10 @@ def validate(test_loader, model, criterion):
     top5 = AverageMeter()
     with torch.no_grad():
         end = time.time()
-        for idx, batch_data in tqdm(enumerate(test_loader[0])):
-            batch_data = permute_single_batch(batch_data)
+        for idx, batch_data in enumerate(test_loader[0]):
+            if idx >= 800:
+                break
+            batch_data = permute_test_data(batch_data)
             batch_input = batch_data['imgs']
             batch_gt = batch_data['label']
             batch_size = len(batch_input)    
@@ -141,7 +143,7 @@ def validate(test_loader, model, criterion):
             batch_time.update(time.time() - end)
             end = time.time()
 
-            if (idx+1) % opts.print_freq == 0:
+            if (idx+8) % opts.print_freq == 0:
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
@@ -234,9 +236,9 @@ def train_with_config(args, opts):
     test_data_loaders = [
         build_dataloader(ds, **test_dataloader_setting) for ds in test_dataset
     ]
-    print((test_data_loaders[0]))
+    print(len(train_data_loaders[0]))
 
-    for batch_idx, batch_data in enumerate(test_data_loaders[0]):
+    for batch_idx, batch_data in enumerate(train_data_loaders[0]):
         print(f"Batch {batch_idx + 1} Type: {type(batch_data)}")
 
         # Permute the batch
@@ -295,7 +297,7 @@ def train_with_config(args, opts):
             model.train()
             end = time.time()
             iters = len(train_data_loaders)
-            for idx, batch_data in tqdm(enumerate(train_data_loaders[0])):    # (N, 2, T, 17, 3) to (N, 1, T, 17, 3136)
+            for idx, batch_data in enumerate(train_data_loaders[0]):    # (N, 2, T, 17, 3) to (N, 1, T, 17, 3136)
                 if idx >= 100:
                     break
                 batch_data = permute_single_batch(batch_data)
