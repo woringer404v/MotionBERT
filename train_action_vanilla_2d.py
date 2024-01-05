@@ -21,7 +21,7 @@ from lib.utils.learning import *
 from lib.model.loss import *
 from lib.data.dataset_action import NTURGBD, NTURGBD_3D
 from lib.model.model_action import ActionNet
-from MAMP.model.transformer import Transformer
+from vanilla.model.transformer import Transformer
 
 random.seed(0)
 np.random.seed(0)

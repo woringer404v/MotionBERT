@@ -2,9 +2,9 @@
 
 This repository uses the following models:
 
-[Pyskl](https://github.com/kennymckormick/pyskl)
-[MotionBERT](https://github.com/Walter0807/MotionBERT)
-[ViViT](https://github.com/google-research/scenic/tree/main/scenic/projects/vivit) which is the official code of the paper but since it is in JAX, another adaptation is presented here using TensorFlow 
+- Pyskl: https://github.com/kennymckormick/pyskl
+- MotionBERT: https://github.com/Walter0807/MotionBERT
+- ViViT: https://github.com/google-research/scenic/tree/main/scenic/projects/vivit which is the official code of the paper but since it is in JAX, another adaptation is presented here using TensorFlow 
 
 ## Installation
 

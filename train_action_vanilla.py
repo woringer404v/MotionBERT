@@ -23,7 +23,7 @@ from lib.data.dataset_action import NTURGBD
 from lib.model.model_action import ActionNet
 from lib.utils.tools import read_pkl
 from pyskl.datasets import build_dataset, build_dataloader
-from MAMP.model.transformer import Transformer
+from vanilla.model.transformer import Transformer
 
 random.seed(0)
 np.random.seed(0)
