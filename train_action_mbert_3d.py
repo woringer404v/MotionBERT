@@ -19,11 +19,8 @@ from torch.utils.data import DataLoader
 from lib.utils.tools import *
 from lib.utils.learning import *
 from lib.model.loss import *
-from lib.data.dataset_action import NTURGBD, NTURGBD1Shot
+from lib.data.dataset_action import NTURGBD, NTURGBD_3D
 from lib.model.model_action import ActionNet
-
-from lib.model.loss_supcon import SupConLoss
-from pytorch_metric_learning import samplers
 
 random.seed(0)
 np.random.seed(0)
@@ -37,36 +34,48 @@ def parse_args():
     parser.add_argument('-r', '--resume', default='', type=str, metavar='FILENAME', help='checkpoint to resume (file name)')
     parser.add_argument('-e', '--evaluate', default='', type=str, metavar='FILENAME', help='checkpoint to evaluate (file name)')
     parser.add_argument('-freq', '--print_freq', default=100)
-    parser.add_argument('-ms', '--selection', default='best_epoch.bin', type=str, metavar='FILENAME', help='checkpoint to finetune (file name)')
+    parser.add_argument('-ms', '--selection', default='latest_epoch.bin', type=str, metavar='FILENAME', help='checkpoint to finetune (file name)')
     opts = parser.parse_args()
     return opts
 
-def extract_feats(dataloader_x, model):
-    all_feats = []
-    all_gts = []
+def validate(test_loader, model, criterion):
+    model.eval()
+    batch_time = AverageMeter()
+    losses = AverageMeter()
+    top1 = AverageMeter()
+    top5 = AverageMeter()
     with torch.no_grad():
-        for idx, (batch_input, batch_gt) in tqdm(enumerate(dataloader_x)):    # (N, 2, T, 17, 3)
+        end = time.time()
+        for idx, (batch_input, batch_gt) in enumerate(test_loader):
+            batch_size = len(batch_input)    
             if torch.cuda.is_available():
-                batch_input = batch_input.cuda()      
-            feat = model(batch_input)
-            all_feats.append(feat)
-            all_gts.append(batch_gt)
-    all_feats = torch.cat(all_feats)
-    all_gts = torch.cat(all_gts)
-    return all_feats, all_gts
+                batch_gt = batch_gt.cuda()
+                batch_input = batch_input.cuda()
+            output = model(batch_input)    # (N, num_classes)
+            loss = criterion(output, batch_gt)
 
-def validate(anchor_loader, test_loader, model):
-    train_feats, train_labels = extract_feats(anchor_loader, model)
-    test_feats, test_labels = extract_feats(test_loader, model)
-    M = len(train_feats)
-    N = len(test_feats)
-    train_feats = train_feats.unsqueeze(1)
-    test_feats = test_feats.unsqueeze(0)
-    dis = F.cosine_similarity(train_feats, test_feats, dim=-1)
-    pred = train_labels[torch.argmax(dis, dim=0)]
-    assert len(pred)==len(test_labels)
-    acc = sum(pred==test_labels) / len(pred)
-    return acc
+            # update metric
+            losses.update(loss.item(), batch_size)
+            acc1, acc5 = accuracy(output, batch_gt, topk=(1, 5))
+            top1.update(acc1[0], batch_size)
+            top5.update(acc5[0], batch_size)
+
+            # measure elapsed time
+            batch_time.update(time.time() - end)
+            end = time.time()
+
+            if (idx+1) % opts.print_freq == 0:
+                print('Test: [{0}/{1}]\t'
+                      'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
+                      'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
+                      'Acc@1 {top1.val:.3f} ({top1.avg:.3f})\t'
+                      'Acc@5 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
+                       idx, len(test_loader), batch_time=batch_time,
+                       loss=losses, top1=top1, top5=top5))
+    print('TEST RESULTS:')
+    print('Test loss: ', losses.avg, 'Test top1: ', top1.avg, 'Test top5: ', top5.avg)
+    return losses.avg, top1.avg, top5.avg
+
 
 def train_with_config(args, opts):
     print(args)
@@ -81,23 +90,46 @@ def train_with_config(args, opts):
         if opts.resume or opts.evaluate:
             pass
         else:
-            chk_filename = os.path.join(opts.pretrained, "best_epoch.bin")
+            chk_filename = os.path.join(opts.pretrained, opts.selection)
             print('Loading backbone', chk_filename)
-            checkpoint = torch.load(chk_filename, map_location=lambda storage, loc: storage)
-            new_state_dict = OrderedDict()
-            for k, v in checkpoint['model_pos'].items():
-                name = k[7:]                                            # remove 'module.'
-                new_state_dict[name] = v 
-            model_backbone.load_state_dict(new_state_dict, strict=True)
-            if args.partial_train:
-                model_backbone = partial_train_layers(model_backbone, args.partial_train)
-    model = ActionNet(backbone=model_backbone, dim_rep=args.dim_rep, dropout_ratio=args.dropout_ratio, version=args.model_version, hidden_dim=args.hidden_dim, num_joints=args.num_joints)
-    criterion = SupConLoss(temperature=args.temp)
-    
+            checkpoint = torch.load(chk_filename, map_location=lambda storage, loc: storage)['model_pos']
+            model_backbone = load_pretrained_weights(model_backbone, checkpoint)
+    if args.partial_train:
+        model_backbone = partial_train_layers(model_backbone, args.partial_train)
+    model = ActionNet(backbone=model_backbone, dim_rep=args.dim_rep, num_classes=args.action_classes, dropout_ratio=args.dropout_ratio, version=args.model_version, hidden_dim=args.hidden_dim, num_joints=args.num_joints)
+    criterion = torch.nn.CrossEntropyLoss()
     if torch.cuda.is_available():
         model = nn.DataParallel(model)
         model = model.cuda()
-        criterion = criterion.cuda()
+        criterion = criterion.cuda() 
+    best_acc = 0
+    model_params = 0
+    for parameter in model.parameters():
+        model_params = model_params + parameter.numel()
+    print('INFO: Trainable parameter count:', model_params)
+    print('Loading dataset...')
+    trainloader_params = {
+          'batch_size': args.batch_size,
+          'shuffle': True,
+          'num_workers': 8,
+          'pin_memory': True,
+          'prefetch_factor': 4,
+          'persistent_workers': True
+    }
+    testloader_params = {
+          'batch_size': args.batch_size,
+          'shuffle': False,
+          'num_workers': 8,
+          'pin_memory': True,
+          'prefetch_factor': 4,
+          'persistent_workers': True
+    }
+    data_path = 'data/action/ntu60_3danno.pkl' #% args.dataset
+    ntu60_xsub_train = NTURGBD_3D(data_path=data_path, data_split=args.data_split+'_train', n_frames=args.clip_len, random_move=args.random_move, scale_range=args.scale_range_train)
+    ntu60_xsub_val = NTURGBD_3D(data_path=data_path, data_split=args.data_split+'_val', n_frames=args.clip_len, random_move=False, scale_range=args.scale_range_test)
+
+    train_loader = DataLoader(ntu60_xsub_train, **trainloader_params)
+    test_loader = DataLoader(ntu60_xsub_val, **testloader_params)
         
     chk_filename = os.path.join(opts.checkpoint, "latest_epoch.bin")
     if os.path.exists(chk_filename):
@@ -107,58 +139,15 @@ def train_with_config(args, opts):
         print('Loading checkpoint', chk_filename)
         checkpoint = torch.load(chk_filename, map_location=lambda storage, loc: storage)
         model.load_state_dict(checkpoint['model'], strict=True)
-        
-    best_acc = 0
-    model_params = 0
-    for parameter in model.parameters():
-        model_params = model_params + parameter.numel()
-    print('INFO: Trainable parameter count:', model_params)
-    print('Loading dataset...')
-
-    anchorloader_params = {
-              'batch_size': args.batch_size,
-              'shuffle': False,
-              'num_workers': 8,
-              'pin_memory': True,
-              'prefetch_factor': 4,
-              'persistent_workers': True
-        }
-
-    testloader_params = {
-              'batch_size': args.batch_size,
-              'shuffle': False,
-              'num_workers': 8,
-              'pin_memory': True,
-              'prefetch_factor': 4,
-              'persistent_workers': True
-        }
-    data_path_1shot = 'data/action/ntu120_hrnet_oneshot.pkl'
-    ntu60_1shot_anchor = NTURGBD(data_path=data_path_1shot, data_split='oneshot_train', n_frames=args.clip_len, random_move=False, scale_range=args.scale_range_test)
-    ntu60_1shot_test = NTURGBD(data_path=data_path_1shot, data_split='oneshot_val', n_frames=args.clip_len, random_move=False, scale_range=args.scale_range_test)
-    anchor_loader = DataLoader(ntu60_1shot_anchor, **anchorloader_params)
-    test_loader = DataLoader(ntu60_1shot_test, **testloader_params)
-
-    if not opts.evaluate:    
-        # Load training data (auxiliary set)
-        data_path = 'data/action/ntu120_hrnet.pkl'
-        ntu120_1shot_train = NTURGBD1Shot(data_path=data_path, data_split='', n_frames=args.clip_len, random_move=args.random_move, scale_range=args.scale_range_train, check_split=False)
-        sampler = samplers.MPerClassSampler(ntu120_1shot_train.labels, m=args.n_views, batch_size=args.batch_size, length_before_new_iter=len(ntu120_1shot_train))
-        trainloader_params = {
-              'batch_size': args.batch_size,
-              'shuffle': False,
-              'num_workers': 8,
-              'pin_memory': True,
-              'prefetch_factor': 4,
-              'persistent_workers': True,
-              'sampler': sampler
-        }
-        train_loader = DataLoader(ntu120_1shot_train, **trainloader_params)
+    
+    if not opts.evaluate:
         optimizer = optim.AdamW(
             [     {"params": filter(lambda p: p.requires_grad, model.module.backbone.parameters()), "lr": args.lr_backbone},
                   {"params": filter(lambda p: p.requires_grad, model.module.head.parameters()), "lr": args.lr_head},
             ],      lr=args.lr_backbone, 
                     weight_decay=args.weight_decay
         )
+
         scheduler = StepLR(optimizer, step_size=1, gamma=args.lr_decay)
         st = 0
         print('INFO: Training on {} batches'.format(len(train_loader)))
@@ -168,48 +157,58 @@ def train_with_config(args, opts):
                 optimizer.load_state_dict(checkpoint['optimizer'])
             else:
                 print('WARNING: this checkpoint does not contain an optimizer state. The optimizer will be reinitialized.')
-
             lr = checkpoint['lr']
             if 'best_acc' in checkpoint and checkpoint['best_acc'] is not None:
                 best_acc = checkpoint['best_acc']
-                
         # Training
         for epoch in range(st, args.epochs):
             print('Training epoch %d.' % epoch)
             losses_train = AverageMeter()
+            top1 = AverageMeter()
+            top5 = AverageMeter()
             batch_time = AverageMeter()
             data_time = AverageMeter()
-
             model.train()
             end = time.time()
-            
-            for idx, (batch_input, batch_gt) in tqdm(enumerate(train_loader)):
+            iters = len(train_loader)
+            for idx, (batch_input, batch_gt) in enumerate(train_loader):    # (N, 2, T, 17, 3)
                 data_time.update(time.time() - end)
                 batch_size = len(batch_input)
                 if torch.cuda.is_available():
                     batch_gt = batch_gt.cuda()
                     batch_input = batch_input.cuda()
-                feat = model(batch_input) 
-                feat = feat.reshape(batch_size, -1, args.hidden_dim)
+                output = model(batch_input) # (N, num_classes)
                 optimizer.zero_grad()
-                loss_train = criterion(feat, batch_gt)
+                loss_train = criterion(output, batch_gt)
                 losses_train.update(loss_train.item(), batch_size)
+                acc1, acc5 = accuracy(output, batch_gt, topk=(1, 5))
+                top1.update(acc1[0], batch_size)
+                top5.update(acc5[0], batch_size)
                 loss_train.backward()
-                optimizer.step()
+                optimizer.step()    
                 batch_time.update(time.time() - end)
                 end = time.time()
             if (idx + 1) % opts.print_freq == 0:
                 print('Train: [{0}][{1}/{2}]\t'
                       'BT {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
-                      'loss {loss.val:.3f} ({loss.avg:.3f})\t'.format(
+                      'loss {loss.val:.3f} ({loss.avg:.3f})\t'
+                      'Acc@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
                        epoch, idx + 1, len(train_loader), batch_time=batch_time,
-                       data_time=data_time, loss=losses_train))
+                       data_time=data_time, loss=losses_train, top1=top1))
                 sys.stdout.flush()
-            test_top1 = validate(anchor_loader, test_loader, model)
-            train_writer.add_scalar('train_loss_supcon', losses_train.avg, epoch + 1)
+                
+            test_loss, test_top1, test_top5 = validate(test_loader, model, criterion)
+                
+            train_writer.add_scalar('train_loss', losses_train.avg, epoch + 1)
+            train_writer.add_scalar('train_top1', top1.avg, epoch + 1)
+            train_writer.add_scalar('train_top5', top5.avg, epoch + 1)
+            train_writer.add_scalar('test_loss', test_loss, epoch + 1)
             train_writer.add_scalar('test_top1', test_top1, epoch + 1)
+            train_writer.add_scalar('test_top5', test_top5, epoch + 1)
+            
             scheduler.step()
+
             # Save latest checkpoint.
             chk_path = os.path.join(opts.checkpoint, 'latest_epoch.bin')
             print('Saving checkpoint to', chk_path)
@@ -221,7 +220,7 @@ def train_with_config(args, opts):
                 'best_acc' : best_acc
             }, chk_path)
 
-            # Save best checkpoint
+            # Save best checkpoint.
             best_chk_path = os.path.join(opts.checkpoint, 'best_epoch.bin'.format(epoch))
             if test_top1 > best_acc:
                 best_acc = test_top1
@@ -233,11 +232,14 @@ def train_with_config(args, opts):
                 'model': model.state_dict(),
                 'best_acc' : best_acc
                 }, best_chk_path)
+
     if opts.evaluate:
-        test_top1 = validate(anchor_loader, test_loader, model)
-        print(test_top1)
+        test_loss, test_top1, test_top5 = validate(test_loader, model, criterion)
+        print('Loss {loss:.4f} \t'
+              'Acc@1 {top1:.3f} \t'
+              'Acc@5 {top5:.3f} \t'.format(loss=test_loss, top1=test_top1, top5=test_top5))
+
 if __name__ == "__main__":
     opts = parse_args()
     args = get_config(opts.config)
     train_with_config(args, opts)
-    

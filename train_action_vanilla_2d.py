@@ -19,86 +19,25 @@ from torch.utils.data import DataLoader
 from lib.utils.tools import *
 from lib.utils.learning import *
 from lib.model.loss import *
-from lib.data.dataset_action import NTURGBD
+from lib.data.dataset_action import NTURGBD, NTURGBD_3D
 from lib.model.model_action import ActionNet
-from lib.utils.tools import read_pkl
-from pyskl.datasets import build_dataset, build_dataloader
+from MAMP.model.transformer import Transformer
 
 random.seed(0)
 np.random.seed(0)
 torch.manual_seed(0)
 
-def permute_single_batch(batch):
-    """
-    Permute and reshape the given batch.
-    
-    Assumes the batch is a dictionary containing a tensor where
-    the last two dimensions need to be combined.
-    """
-    batch['imgs'] = batch['imgs'].permute(0, 1, 3, 2, 4, 5)  # Permute the dimensions
-    
-    # Get the shape of the tensor and combine the last two dimensions
-    *leading_dims, last_dim1, last_dim2 = batch['imgs'].shape
-    batch['imgs'] = batch['imgs'].reshape(*leading_dims, last_dim1*last_dim2)
-    
-    batch['label'] = batch['label'].squeeze(dim=1)
+def permute_train_batch(batch_data):
+    data, labels = batch_data 
+    data = data.permute(0, 4, 2, 3, 1) 
+    return data, labels
 
-    return batch
 
-def permute_test_data(batch):
-    """
-    Permute and reshape the given batch.
-    
-    Assumes the batch is a dictionary containing a tensor where
-    the last two dimensions need to be combined.
-    """
-    batch['imgs'] = batch['imgs'].permute(0, 1, 3, 2, 4, 5)  # Permute the dimensions
-    
-    # Get the shape of the tensor and combine the last two dimensions
-    *leading_dims, last_dim1, last_dim2 = batch['imgs'].shape
-    batch['imgs'] = batch['imgs'].reshape(*leading_dims, last_dim1*last_dim2)
+def permute_test_batch(batch_data):
+    data, labels = batch_data 
+    data = data.permute(0, 4, 2, 3, 1)  
+    return data, labels
 
-    return batch
-
-dataset = read_pkl('data/action/ntu60_hrnet.pkl')
-dataset_type = 'PoseDataset'
-ann_file = 'data/action/ntu60_hrnet.pkl'
-left_kp = [1, 3, 5, 7, 9, 11, 13, 15]
-right_kp = [2, 4, 6, 8, 10, 12, 14, 16]
-train_pipeline = [
-    dict(type='UniformSampleFrames', clip_len=48),
-    dict(type='PoseDecode'),
-    dict(type='PoseCompact', hw_ratio=1., allow_imgpad=True),
-    dict(type='Resize', scale=(-1, 64)),
-    dict(type='RandomResizedCrop', area_range=(0.56, 1.0)),
-    dict(type='Resize', scale=(56, 56), keep_ratio=False),
-    dict(type='Flip', flip_ratio=0.5, left_kp=left_kp, right_kp=right_kp),
-    dict(type='GeneratePoseTarget', with_kp=True, with_limb=False),
-    dict(type='FormatShape', input_format='NCTHW_Heatmap'),
-    dict(type='Collect', keys=['imgs', 'label'], meta_keys=[]),
-    dict(type='ToTensor', keys=['imgs', 'label'])
-]
-
-test_pipeline = [
-    dict(type='UniformSampleFrames', clip_len=48, num_clips=10),
-    dict(type='PoseDecode'),
-    dict(type='PoseCompact', hw_ratio=1., allow_imgpad=True),
-    dict(type='Resize', scale=(56, 56), keep_ratio=False),
-    dict(type='GeneratePoseTarget', with_kp=True, with_limb=False, double=True, left_kp=left_kp, right_kp=right_kp),
-    dict(type='FormatShape', input_format='NCTHW_Heatmap'),
-    dict(type='Collect', keys=['imgs', 'label'], meta_keys=[]),
-    dict(type='ToTensor', keys=['imgs'])
-]
-
-data = dict(
-    videos_per_gpu=32,
-    workers_per_gpu=1,
-    test_dataloader=dict(videos_per_gpu=1),
-    train=dict(
-        type='RepeatDataset',
-        times=1,
-        dataset=dict(type=dataset_type, ann_file=ann_file, split='xsub_train', pipeline=train_pipeline)),
-    test=dict(type=dataset_type, ann_file=ann_file, split='xsub_val', pipeline=test_pipeline))
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -107,7 +46,7 @@ def parse_args():
     parser.add_argument('-p', '--pretrained', default='checkpoint', type=str, metavar='PATH', help='pretrained checkpoint directory')
     parser.add_argument('-r', '--resume', default='', type=str, metavar='FILENAME', help='checkpoint to resume (file name)')
     parser.add_argument('-e', '--evaluate', default='', type=str, metavar='FILENAME', help='checkpoint to evaluate (file name)')
-    parser.add_argument('-freq', '--print_freq', default=101)
+    parser.add_argument('-freq', '--print_freq', default=100)
     parser.add_argument('-ms', '--selection', default='latest_epoch.bin', type=str, metavar='FILENAME', help='checkpoint to finetune (file name)')
     opts = parser.parse_args()
     return opts
@@ -120,12 +59,9 @@ def validate(test_loader, model, criterion):
     top5 = AverageMeter()
     with torch.no_grad():
         end = time.time()
-        for idx, batch_data in enumerate(test_loader[0]):
-            if idx >= 800:
-                break
-            batch_data = permute_test_data(batch_data)
-            batch_input = batch_data['imgs']
-            batch_gt = batch_data['label']
+        for idx, batch_data in enumerate(test_loader):
+            batch_data = permute_test_batch(batch_data)
+            batch_input, batch_gt = batch_data
             batch_size = len(batch_input)    
             if torch.cuda.is_available():
                 batch_gt = batch_gt.cuda()
@@ -143,7 +79,7 @@ def validate(test_loader, model, criterion):
             batch_time.update(time.time() - end)
             end = time.time()
 
-            if (idx+8) % opts.print_freq == 0:
+            if (idx+1) % opts.print_freq == 0:
                 print('Test: [{0}/{1}]\t'
                       'Time {batch_time.val:.3f} ({batch_time.avg:.3f})\t'
                       'Loss {loss.val:.4f} ({loss.avg:.4f})\t'
@@ -151,6 +87,8 @@ def validate(test_loader, model, criterion):
                       'Acc@5 {top5.val:.3f} ({top5.avg:.3f})\t'.format(
                        idx, len(test_loader), batch_time=batch_time,
                        loss=losses, top1=top1, top5=top5))
+    print('TEST RESULTS:')
+    print('Test loss: ', losses.avg, 'Test top1: ', top1.avg, 'Test top5: ', top5.avg)
     return losses.avg, top1.avg, top5.avg
 
 
@@ -162,7 +100,6 @@ def train_with_config(args, opts):
         if e.errno != errno.EEXIST:
             raise RuntimeError('Unable to create checkpoint directory:', opts.checkpoint)
     train_writer = tensorboardX.SummaryWriter(os.path.join(opts.checkpoint, "logs"))
-    model_backbone = load_backbone(args)
     if args.finetune:
         if opts.resume or opts.evaluate:
             pass
@@ -173,7 +110,11 @@ def train_with_config(args, opts):
             model_backbone = load_pretrained_weights(model_backbone, checkpoint)
     if args.partial_train:
         model_backbone = partial_train_layers(model_backbone, args.partial_train)
-    model = ActionNet(backbone=model_backbone, dim_rep=args.dim_rep, num_classes=args.action_classes, dropout_ratio=args.dropout_ratio, version=args.model_version, hidden_dim=args.hidden_dim, num_joints=args.num_joints)
+    model = Transformer(dim_in=3, num_classes=60, dim_feat=256,
+                        depth=8, num_heads=8, mlp_ratio=4,
+                        num_frames=48, num_joints=17, patch_size=1, t_patch_size=4,
+                        qkv_bias=True, qk_scale=None, drop_rate=0., attn_drop_rate=0.,
+                        drop_path_rate=0., norm_layer=nn.LayerNorm, protocol='linprobe')
     criterion = torch.nn.CrossEntropyLoss()
     if torch.cuda.is_available():
         model = nn.DataParallel(model)
@@ -201,62 +142,30 @@ def train_with_config(args, opts):
           'prefetch_factor': 4,
           'persistent_workers': True
     }
-    data_path = 'data/action/%s.pkl' % args.dataset
-    # ntu60_xsub_train = NTURGBDPySKL(data_path=data_path, resize_scale_1=(-1, 64), resize_scale_2=(56, 56), crop_area_range=(0.56, 1.0), input_format='NCTHW_Heatmap', keys=['imgs', 'label'], meta_keys=[])
-    # ntu60_xsub_val = NTURGBDPySKL(data_path=data_path, resize_scale_1=(-1, 64), resize_scale_2=(56, 56), crop_area_range=(0.56, 1.0), input_format='NCTHW_Heatmap', keys=['imgs', 'label'], meta_keys=[])
-    # print(ntu60_xsub_train[0])
-    # train_loader = DataLoader(ntu60_xsub_train, **trainloader_params)
-    # test_loader = DataLoader(ntu60_xsub_val, **testloader_params)
+    data_path = 'data/action/ntu60_hrnet.pkl' #% args.dataset
+    ntu60_xsub_train = NTURGBD(data_path=data_path, data_split=args.data_split+'_train', n_frames=args.clip_len, random_move=args.random_move, scale_range=args.scale_range_train)
+    ntu60_xsub_val = NTURGBD(data_path=data_path, data_split=args.data_split+'_val', n_frames=args.clip_len, random_move=False, scale_range=args.scale_range_test)
 
-    train_dataset = [build_dataset(data['train'])]
-    test_dataset = [build_dataset(data['test'], dict(test_mode=True))]
-    # prepare data loaders
-    # train_dataset = train_dataset if isinstance(dataset, (list, tuple)) else [dataset]
-    # test_dataset = test_dataset if isinstance(dataset, (list, tuple)) else [dataset]
+    train_loader = DataLoader(ntu60_xsub_train, **trainloader_params)
+    test_loader = DataLoader(ntu60_xsub_val, **testloader_params)
 
-    train_dataloader_setting = dict(
-        videos_per_gpu=data.get('videos_per_gpu', 1),
-        workers_per_gpu=data.get('workers_per_gpu', 1),
-        persistent_workers=data.get('persistent_workers', False))
-    train_dataloader_setting = dict(train_dataloader_setting,
-                              **data.get('train_dataloader', {}))
-    
-    test_dataloader_setting = dict(
-            videos_per_gpu=data.get('videos_per_gpu', 1),
-            workers_per_gpu=data.get('workers_per_gpu', 1),
-            persistent_workers=data.get('persistent_workers', False),
-            shuffle=False)
-    test_dataloader_setting = dict(test_dataloader_setting,
-                                **data.get('test_dataloader', {}))
-
-    train_data_loaders = [
-        build_dataloader(ds, **train_dataloader_setting) for ds in train_dataset
-    ]
-
-    test_data_loaders = [
-        build_dataloader(ds, **test_dataloader_setting) for ds in test_dataset
-    ]
-    print(len(train_data_loaders[0]))
-
-    for batch_idx, batch_data in enumerate(train_data_loaders[0]):
+    for batch_idx, batch_data in enumerate(train_loader):
         print(f"Batch {batch_idx + 1} Type: {type(batch_data)}")
-
-        # Permute the batch
-        batch_data = permute_test_data(batch_data)
-
-        # If it's a dictionary, print the keys and the shape of associated values (assuming they're tensors)
-        if isinstance(batch_data, dict):
-            for key, value in batch_data.items():
-                if isinstance(value, torch.Tensor):
-                    print(f"Key: {key}, Tensor Shape: {value.shape}")
+        
+        # Check if batch_data is a list and print its length and the type of its elements
+        if isinstance(batch_data, list):
+            print(f"Batch is a list with length: {len(batch_data)}")
+            for i, item in enumerate(batch_data):
+                if isinstance(item, torch.Tensor):
+                    print(f"Item {i}: Tensor with shape {item.shape}")
                 else:
-                    print(f"Key: {key}, Value Type: {type(value)}")
+                    print(f"Item {i}: Type {type(item)}")
 
         # Optionally, break after a few batches to prevent flooding your output
         if batch_idx > 0:
             break
 
-   
+        
     chk_filename = os.path.join(opts.checkpoint, "latest_epoch.bin")
     if os.path.exists(chk_filename):
         opts.resume = chk_filename
@@ -267,16 +176,22 @@ def train_with_config(args, opts):
         model.load_state_dict(checkpoint['model'], strict=True)
     
     if not opts.evaluate:
+        # optimizer = optim.AdamW(
+        #     [     {"params": filter(lambda p: p.requires_grad, model.module.backbone.parameters()), "lr": args.lr_backbone},
+        #           {"params": filter(lambda p: p.requires_grad, model.module.head.parameters()), "lr": args.lr_head},
+        #     ],      lr=args.lr_backbone, 
+        #             weight_decay=args.weight_decay
+        # )
+
         optimizer = optim.AdamW(
-            [     {"params": filter(lambda p: p.requires_grad, model.module.backbone.parameters()), "lr": args.lr_backbone},
-                  {"params": filter(lambda p: p.requires_grad, model.module.head.parameters()), "lr": args.lr_head},
-            ],      lr=args.lr_backbone, 
-                    weight_decay=args.weight_decay
+            filter(lambda p: p.requires_grad, model.parameters()), 
+            lr=args.lr_backbone,
+            weight_decay=args.weight_decay
         )
 
         scheduler = StepLR(optimizer, step_size=1, gamma=args.lr_decay)
         st = 0
-        print('INFO: Training on {} batches'.format(len(train_data_loaders[0])))
+        print('INFO: Training on {} batches'.format(len(train_loader)))
         if opts.resume:
             st = checkpoint['epoch']
             if 'optimizer' in checkpoint and checkpoint['optimizer'] is not None:
@@ -296,13 +211,10 @@ def train_with_config(args, opts):
             data_time = AverageMeter()
             model.train()
             end = time.time()
-            iters = len(train_data_loaders)
-            for idx, batch_data in enumerate(train_data_loaders[0]):    # (N, 2, T, 17, 3) to (N, 1, T, 17, 3136)
-                if idx >= 100:
-                    break
-                batch_data = permute_single_batch(batch_data)
-                batch_input = batch_data['imgs']
-                batch_gt = batch_data['label']
+            iters = len(train_loader)
+            for idx, batch_data in enumerate(train_loader):    # (N, 2, T, 17, 3)
+                batch_data = permute_train_batch(batch_data)
+                batch_input, batch_gt = batch_data
                 data_time.update(time.time() - end)
                 batch_size = len(batch_input)
                 if torch.cuda.is_available():
@@ -325,11 +237,11 @@ def train_with_config(args, opts):
                       'DT {data_time.val:.3f} ({data_time.avg:.3f})\t'
                       'loss {loss.val:.3f} ({loss.avg:.3f})\t'
                       'Acc@1 {top1.val:.3f} ({top1.avg:.3f})'.format(
-                       epoch, idx + 1, len(train_data_loaders), batch_time=batch_time,
+                       epoch, idx + 1, len(train_loader), batch_time=batch_time,
                        data_time=data_time, loss=losses_train, top1=top1))
                 sys.stdout.flush()
                 
-            test_loss, test_top1, test_top5 = validate(test_data_loaders, model, criterion)
+            test_loss, test_top1, test_top5 = validate(test_loader, model, criterion)
                 
             train_writer.add_scalar('train_loss', losses_train.avg, epoch + 1)
             train_writer.add_scalar('train_top1', top1.avg, epoch + 1)
@@ -365,7 +277,7 @@ def train_with_config(args, opts):
                 }, best_chk_path)
 
     if opts.evaluate:
-        test_loss, test_top1, test_top5 = validate(test_data_loaders, model, criterion)
+        test_loss, test_top1, test_top5 = validate(test_loader, model, criterion)
         print('Loss {loss:.4f} \t'
               'Acc@1 {top1:.3f} \t'
               'Acc@5 {top5:.3f} \t'.format(loss=test_loss, top1=test_top1, top5=test_top5))

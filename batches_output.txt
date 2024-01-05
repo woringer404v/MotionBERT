@@ -1,6 +1,0 @@
-Batch 1 Type: <class 'list'>
-List Element 0, Tensor Shape: torch.Size([32, 2, 243, 17, 3])
-List Element 1, Tensor Shape: torch.Size([32])
-Batch 2 Type: <class 'list'>
-List Element 0, Tensor Shape: torch.Size([32, 2, 243, 17, 3])
-List Element 1, Tensor Shape: torch.Size([32])

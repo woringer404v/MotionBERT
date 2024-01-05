@@ -10,3 +10,14 @@ roma
 ipdb
 pytorch-metric-learning                         # For one-shot action recognition
 smplx[all]                                      # For mesh recovery
+decord>=0.6.0
+fvcore
+mmcv-full==1.5.0
+mmdet==2.23.0
+mmpose==0.24.0
+moviepy
+numpy>=1.19.5
+opencv-contrib-python
+pymemcache
+scipy
+torch>=1.5

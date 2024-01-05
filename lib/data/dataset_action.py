@@ -4,7 +4,7 @@ import os
 import random
 import copy
 from torch.utils.data import Dataset, DataLoader
-from lib.utils.utils_data import crop_scale, resample
+from lib.utils.utils_data import crop_scale, resample, crop_scale_3d
 from lib.utils.tools import read_pkl
     
 def get_action_names(file_path = "data/action/ntu_actions.txt"):
@@ -109,7 +109,60 @@ def random_move(data_numpy,
         new_xy[1] += t_y[i_frame]
         data_numpy[0:2, i_frame, :, :] = new_xy.reshape(2, V, M)
     data_numpy = np.transpose(data_numpy, (3,1,2,0)) # C,T,V,M -> M,T,V,C
-    return data_numpy    
+    return data_numpy   
+
+def random_move_3d(data_numpy, angle_range=[-10., 10.], scale_range=[0.9, 1.1], transform_range=[-0.1, 0.1], move_time_candidate=[1]):
+    data_numpy = np.transpose(data_numpy, (3,1,2,0)) # M,T,V,C-> C,T,V,M
+    C, T, V, M = data_numpy.shape
+
+    move_time = random.choice(move_time_candidate)
+    node = np.arange(0, T, T * 1.0 / move_time).round().astype(int)
+    node = np.append(node, T)
+    num_node = len(node)
+
+    # Generate random parameters for transformations
+    A = np.random.uniform(angle_range[0], angle_range[1], (num_node, 3))  # Angles for rotation around x, y, z
+    S = np.random.uniform(scale_range[0], scale_range[1], num_node)
+    T_xyz = np.random.uniform(transform_range[0], transform_range[1], (num_node, 3))  # Translation in x, y, z
+
+    a, s, t_xyz = np.zeros((T, 3)), np.zeros(T), np.zeros((T, 3))
+
+    # Interpolate transformation parameters
+    for i in range(num_node - 1):
+        for j in range(3):  # Interpolate each angle separately
+            a[node[i]:node[i + 1], j] = np.linspace(A[i, j], A[i + 1, j], node[i + 1] - node[i]) * np.pi / 180
+        s[node[i]:node[i + 1]] = np.linspace(S[i], S[i + 1], node[i + 1] - node[i])
+        for j in range(3):  # Interpolate each translation component separately
+            t_xyz[node[i]:node[i + 1], j] = np.linspace(T_xyz[i, j], T_xyz[i + 1, j], node[i + 1] - node[i])
+
+    # Apply transformations
+    for i_frame in range(T):
+        xyz = data_numpy[:3, i_frame, :, :].reshape(3, -1)  # Flatten keypoints to apply transformation
+
+        # Apply rotation around x, y, and z axes
+        Rx = np.array([[1, 0, 0],
+                       [0, np.cos(a[i_frame, 0]), -np.sin(a[i_frame, 0])],
+                       [0, np.sin(a[i_frame, 0]), np.cos(a[i_frame, 0])]])
+        Ry = np.array([[np.cos(a[i_frame, 1]), 0, np.sin(a[i_frame, 1])],
+                       [0, 1, 0],
+                       [-np.sin(a[i_frame, 1]), 0, np.cos(a[i_frame, 1])]])
+        Rz = np.array([[np.cos(a[i_frame, 2]), -np.sin(a[i_frame, 2]), 0],
+                       [np.sin(a[i_frame, 2]), np.cos(a[i_frame, 2]), 0],
+                       [0, 0, 1]])
+
+        # Combine rotations and apply
+        rotation_matrix = np.dot(Rz, np.dot(Ry, Rx))
+        rotated_xyz = np.dot(rotation_matrix, xyz)
+
+        # Apply scaling and translation
+        scaled_xyz = rotated_xyz * s[i_frame]
+        translated_xyz = scaled_xyz + t_xyz[i_frame, :, None]
+
+        # Update the data_numpy with transformed coordinates
+        data_numpy[:3, i_frame, :, :] = translated_xyz.reshape(3, V, M)
+
+    data_numpy = np.transpose(data_numpy, (3,1,2,0)) # C,T,V,M -> M,T,V,C
+    return data_numpy
 
 def human_tracking(x):
     M, T = x.shape[:2]
@@ -165,6 +218,46 @@ class ActionDataset(Dataset):
 
     def __getitem__(self, index):
         raise NotImplementedError 
+    
+class ActionDataset_3D(Dataset):
+    def __init__(self, data_path, data_split, n_frames=243, random_move=True, scale_range=[1,1], check_split=True):   # data_split: train/test etc.
+        np.random.seed(0)
+        dataset = read_pkl(data_path)
+        if check_split:
+            assert data_split in dataset['split'].keys()
+            self.split = dataset['split'][data_split]
+        annotations = dataset['annotations']
+        self.random_move = random_move
+        self.is_train = "train" in data_split or (check_split==False)
+        if "oneshot" in data_split:
+            self.is_train = False
+        self.scale_range = scale_range
+        motions = []
+        labels = []
+        for sample in annotations:
+            if check_split and (not sample['frame_dir'] in self.split):
+                continue
+            resample_id = resample(ori_len=sample['total_frames'], target_len=n_frames, randomness=self.is_train)
+            #motion_cam = make_cam(x=sample['keypoint'], img_shape=sample['img_shape'])
+            motion_cam = human_tracking(sample['keypoint'])
+            motion_cam = coco2h36m(motion_cam)
+            #motion_conf = sample['keypoint_score'][..., None]
+            motion = motion_cam[:,resample_id]#np.concatenate((motion_cam[:,resample_id], motion_conf[:,resample_id]), axis=-1)
+            if motion.shape[0]==1:                                  # Single person, make a fake zero person
+                fake = np.zeros(motion.shape)
+                motion = np.concatenate((motion, fake), axis=0)
+            motions.append(motion.astype(np.float32)) 
+            labels.append(sample['label'])
+            #print(motion.shape)
+        self.motions = np.array(motions)
+        self.labels = np.array(labels)
+        
+    def __len__(self):
+        'Denotes the total number of samples'
+        return len(self.motions)
+
+    def __getitem__(self, index):
+        raise NotImplementedError 
 
 class NTURGBD(ActionDataset):
     def __init__(self, data_path, data_split, n_frames=243, random_move=True, scale_range=[1,1]):
@@ -180,6 +273,26 @@ class NTURGBD(ActionDataset):
         else:
             result = motion
         return result.astype(np.float32), label
+    
+class NTURGBD_3D(ActionDataset_3D):
+    def __init__(self, data_path, data_split, n_frames=243, random_move=True, scale_range=[1,1]):
+        super(NTURGBD_3D, self).__init__(data_path, data_split, n_frames, random_move, scale_range)
+        # Additional code to handle 3D data loading...
+
+    def __getitem__(self, idx):
+        'Generates one sample of data'
+        # Assuming `self.motions` now contains 3D keypoints
+        motion = self.motions[idx]  # (M, T, J, 3) for 3D keypoints
+
+        if self.random_move:
+            # Ensure `random_move` can handle 3D data
+            motion = random_move_3d(motion)
+
+        # Use `crop_scale_3d` for 3D keypoints
+        motion = crop_scale_3d(motion, scale_range=self.scale_range)
+
+        label = self.labels[idx]
+        return motion.astype(np.float32), label
     
 class NTURGBD1Shot(ActionDataset):
     def __init__(self, data_path, data_split, n_frames=243, random_move=True, scale_range=[1,1], check_split=False):
